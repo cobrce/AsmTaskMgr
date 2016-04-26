@@ -6,14 +6,22 @@ include windows.inc
 include kernel32.inc
 include user32.inc
 include comctl32.inc
+include psapi.inc
+include shell32.inc
+;include gdi32.inc
 includelib kernel32.lib
 includelib user32.lib
 includelib comctl32.lib
+includelib psapi.lib
+includelib shell32.lib
+;includelib gdi32.lib
 
+include c:\masm32\macros\macros.asm
 .data
 hinstance HINSTANCE ?
 hLV dd ?
 mainHWND HWND ?
+;hImageList HANDLE ?
 .code
 
 ; this function zeros the buffer pointed by "dest" having the size of "dwSize" (that's obvious xD)
@@ -38,6 +46,7 @@ SetHeaders proc uses edi
 	.data
 		szName db "Name",00
 		szPID db "PID",00
+		szPath db "Path",00
 	.code
 	
 	xor eax,eax
@@ -45,38 +54,48 @@ SetHeaders proc uses edi
 	
 	push offset szName
 	pop lvc.pszText
-	mov lvc.lx,400
+	mov lvc.lx,200
 	mov lvc.imask,LVCF_WIDTH or LVCF_TEXT
 	call @setheader
 	
 	push offset szPID
 	pop lvc.pszText
 	mov lvc.lx,50
-	inc lvc.iSubItem
-	inc index
 	or lvc.imask,LVCF_SUBITEM
+	call @setheader
+	
+	push offset szPath
+	pop lvc.pszText
+	mov lvc.lx,400
 	call @setheader
 	
 
 	Ret
 @setheader:
-	invoke SendMessage,hLV,LVM_INSERTCOLUMN,index,addr lvc
+	invoke SendMessage,hLV,LVM_INSERTCOLUMN,index,addr lvc	
+	inc lvc.iSubItem
+	inc index
 	db 0C3h	
-
 	
 SetHeaders EndP
 
 ; add items to listview
-SetItem proc uses edi lpszExeFile:DWORD,PID:DWORD
+SetItem proc uses edi lpwszExeFile:DWORD,PID:DWORD,lpwszFileName:DWORD;,iconIndex:DWORD
 
 	local lvi: LV_ITEM
 	local wstrOUT[10]:WCHAR
 	
 	invoke Clear,addr lvi,sizeof lvi
 	
-	push lpszExeFile
+		
+	push lpwszExeFile
 	pop lvi.pszText
 	mov lvi.imask,LVIF_TEXT or LVIF_PARAM
+;	.if iconIndex!=-1
+;		push iconIndex
+;		pop lvi.iImage
+;		or lvi.imask,LVIF_IMAGE
+;	.endif
 	push PID
 	pop lvi.lParam ; save the PID in lParam to avoid str2dw conversion
 	invoke SendMessage,hLV,LVM_INSERTITEMW,0,addr lvi
@@ -84,38 +103,141 @@ SetItem proc uses edi lpszExeFile:DWORD,PID:DWORD
 	.Data
 		format db "%",00,"X",00,00,00
 	.code
+	
 	mov lvi.imask,LVIF_TEXT
-	inc lvi.iSubItem
 	lea ecx, wstrOUT
 	push ecx
 	pop lvi.pszText
 	invoke wsprintfW,ecx,addr format,PID
-	invoke SendMessage,hLV,LVM_SETITEMW,0,addr lvi
+	call @setitem
+	
+	push lpwszFileName
+	pop lvi.pszText
+	call @setitem
+	
 	
 	ret
+@setitem:
+	inc lvi.iSubItem
+	invoke SendMessage,hLV,LVM_SETITEMW,0,addr lvi
+	db 0c3h
 	
 SetItem EndP
+ 
+LogicalDriveToDriveLetter proc  uses esi edi ebx lpwszFileName:DWORD
+
+	local wszPath[MAX_PATH]:WCHAR
+	local Buffer[100]:WCHAR
+	
+	invoke GetLogicalDriveStringsW,100,addr Buffer
+	lea ebx,Buffer
+	.While 1
+		mov byte ptr[ebx+4],00
+		lea edi,wszPath
+		invoke QueryDosDeviceW,ebx,edi,MAX_PATH
+		.if eax
+			invoke lstrlenW,addr wszPath
+			lea ecx,[eax*2]			
+			mov esi,lpwszFileName
+			repe cmpsb
+			jne @f
+				push dword ptr[ebx]
+				sub esi,4
+				pop dword ptr[esi]
+				mov edi,lpwszFileName
+				invoke lstrlenW,esi
+				mov ecx,eax
+				inc ecx
+				rep movsw
+				xor eax,eax
+				inc al
+				ret			
+			@@:
+		.endif
+		.while dword ptr[ebx]
+			inc ebx
+			inc ebx		
+		.endw
+		add ebx,4
+	.endw
+	xor eax,eax
+	ret	
+LogicalDriveToDriveLetter EndP
+
+;IconToImage proc hIcon:HICON
+;
+;	local hDC:HDC
+;	local hBitmap:HBITMAP
+;	local hOldBitmap:HBITMAP	
+;	
+;	invoke CreateCompatibleDC,NULL
+;	mov hDC,eax
+;	
+;	invoke CreateCompatibleBitmap,hDC,16,16
+;	mov hBitmap,eax
+;	invoke SelectObject,hDC,hBitmap
+;	mov hOldBitmap,eax
+;	invoke DrawIcon,hDC,0,0,hIcon
+;	invoke SelectObject,hDC,hOldBitmap
+;	invoke DeleteDC,hDC
+;	invoke DestroyIcon,hIcon
+;	mov eax,hBitmap
+;	Ret
+;IconToImage EndP
 
 ; get the list of running process
 Listprocess proc
 
 	local hSnapShot:HANDLE
 	local lppe:PROCESSENTRY32W
-	
+	local hProcess:HANDLE
+	local wszFileName[MAX_PATH]:WCHAR
+	local hIcon:HICON
+;	local iconIndex:DWORD
 	
 	invoke Clear,addr lppe,sizeof lppe
 	mov lppe.dwSize,sizeof lppe
+	
+;	.if hImageList
+;		invoke ImageList_Destroy,hImageList
+;	.endif
+;	invoke ImageList_Create,16,16,ILC_COLOR8,0,1
+;	mov hImageList,eax
+;	invoke SendMessage,hLV,LVM_SETIMAGELIST,LVSIL_SMALL,hImageList
+	
 	
 	invoke SendMessage,hLV,LVM_DELETEALLITEMS,0,0
 	invoke CreateToolhelp32Snapshot,TH32CS_SNAPPROCESS,-1
 	.if eax!=-1
 		mov hSnapShot,eax
 		invoke Process32FirstW,hSnapShot,addr lppe
-		.if eax			
+		.if eax
+			mov dword ptr[wszFileName],0			
 			call @setitem
 			.While 1
 				invoke Process32NextW,hSnapShot,addr lppe
 				.break .if !eax
+				mov dword ptr[wszFileName],0
+;				mov iconIndex,-1
+				invoke OpenProcess,PROCESS_QUERY_INFORMATION ,FALSE,lppe.th32ProcessID
+				.if eax
+					mov hProcess,eax
+					invoke GetProcessImageFileNameW,hProcess,addr wszFileName,MAX_PATH
+					.if eax
+						invoke LogicalDriveToDriveLetter,addr wszFileName
+;						.if eax
+;							invoke ExtractIconExW,addr wszFileName,1,0,addr hIcon,1
+;							.if eax!=-1 && hIcon
+;								invoke IconToImage,hIcon
+;								invoke ImageList_Add,hImageList,eax,0
+;								.if eax
+;									mov iconIndex,eax
+;								.endif
+;							.endif
+;						.endif
+					.endif
+					invoke CloseHandle,hProcess
+				.endif				
 				call @setitem
 			.endw
 		.endif
@@ -123,7 +245,7 @@ Listprocess proc
 	.endif	
 	Ret
 @setitem:
-	invoke SetItem,addr lppe.szExeFile,lppe.th32ProcessID
+	invoke SetItem,addr lppe.szExeFile,lppe.th32ProcessID,addr wszFileName;,iconIndex
 	db 0c3h
 Listprocess EndP
 
@@ -239,8 +361,6 @@ main proc hwnd:HWND,umsg:UINT,wparam:WPARAM,lparam:LPARAM
 	jne @close
 	
 	.if umsg == WM_INITDIALOG
-		push hwnd
-		pop mainHWND
 		invoke LoadIcon,hinstance,1000 ; set window icon (actually there's no icon)
 		invoke SendMessage,hwnd,WM_SETICON,ICON_BIG or ICON_SMALL,eax
 		invoke GetDlgItem,hwnd,1002 ; retrieve the handle of listview (makes life easier)
@@ -261,7 +381,7 @@ main proc hwnd:HWND,umsg:UINT,wparam:WPARAM,lparam:LPARAM
 	Ret
 main EndP
 Start:
-	invoke InitCommonControls
+;	invoke InitCommonControls	
 	invoke GetModuleHandle,0
 	mov hinstance,eax
 	invoke DialogBoxParam,hinstance,1001,0,addr main,0
