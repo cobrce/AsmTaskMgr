@@ -249,6 +249,45 @@ Listprocess proc
 	db 0c3h
 Listprocess EndP
 
+OpenFileLocation proc uses edi Index:DWORD
+
+	local lvi:LVITEM
+	local wszPath[MAX_PATH]:WCHAR
+	
+	invoke Clear,addr lvi,sizeof lvi
+	
+	mov lvi.imask,LVIF_TEXT
+	mov lvi.iSubItem,2
+	push Index
+	pop lvi.iItem
+	lea eax,wszPath
+	push eax
+	pop lvi.pszText
+	mov lvi.cchTextMax,MAX_PATH
+	invoke SendMessage,hLV,LVM_GETITEMW,0,addr lvi
+	
+	cld
+	lea edi,wszPath
+	cmp byte ptr [edi],'\'
+	je @end
+	cmp byte ptr[edi],0
+	je @end
+		xor ax,ax
+		mov ecx,-1
+		repne scasw
+		neg ecx
+		std
+		mov ax,'\'
+		repne scasw
+		jne @end
+			mov word ptr[edi+2],00
+			cld
+			invoke ShellExecuteW,0,0,addr wszPath,0,0,SW_SHOW	
+@end:
+	cld
+	Ret
+OpenFileLocation EndP
+
 ; terminate the slected process
 Terminate proc uses edi esi Index:DWORD
 
@@ -373,6 +412,17 @@ main proc hwnd:HWND,umsg:UINT,wparam:WPARAM,lparam:LPARAM
 		invoke SetHeaders ; setup the headers of the listview
 		invoke Listprocess ; show process list
 		
+	.elseif umsg==WM_NOTIFY
+		.if wparam==1002
+			mov eax,lparam
+			.if NMHDR.code[eax] == NM_DBLCLK
+				invoke SendMessage,hLV,LVM_GETNEXTITEM,-1,LVNI_SELECTED
+				.if eax!=-1
+					invoke OpenFileLocation,eax
+				.endif
+			.endif		
+		.endif
+	
 	.elseif umsg==WM_CLOSE
 		@close:
 		invoke EndDialog,hwnd,0 ; euh.. close :p
